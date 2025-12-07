@@ -157,41 +157,43 @@ def handler(job):
         import traceback
         traceback.print_exc()
         return {"error": str(e)}
+    
+runpod.serverless.start({"handler": handler})
 
-# --- Local Testing Block ---
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test SAM 3D locally")
-    parser.add_argument("--image", required=True, help="Input RGB image path")
-    parser.add_argument("--mask", required=True, help="Input Mask image path")
-    parser.add_argument("--output", default="output.glb", help="Output GLB path")
+# # --- Local Testing Block ---
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser(description="Test SAM 3D locally")
+#     parser.add_argument("--image", required=True, help="Input RGB image path")
+#     parser.add_argument("--mask", required=True, help="Input Mask image path")
+#     parser.add_argument("--output", default="output.glb", help="Output GLB path")
     
-    args = parser.parse_args()
+#     args = parser.parse_args()
     
-    print("--- Running SAM 3D Local Test ---")
+#     print("--- Running SAM 3D Local Test ---")
     
-    with open(args.image, "rb") as f:
-        img_b64 = base64.b64encode(f.read()).decode("utf-8")
-    with open(args.mask, "rb") as f:
-        mask_b64 = base64.b64encode(f.read()).decode("utf-8")
+#     with open(args.image, "rb") as f:
+#         img_b64 = base64.b64encode(f.read()).decode("utf-8")
+#     with open(args.mask, "rb") as f:
+#         mask_b64 = base64.b64encode(f.read()).decode("utf-8")
         
-    test_job = {
-        "input": {
-            "image": img_b64,
-            "mask": mask_b64,
-            "seed": 42
-        }
-    }
+#     test_job = {
+#         "input": {
+#             "image": img_b64,
+#             "mask": mask_b64,
+#             "seed": 42
+#         }
+#     }
     
-    init_model()
-    result = handler(test_job)
+#     init_model()
+#     result = handler(test_job)
     
-    if "glb_file" in result:
-        glb_data = base64.b64decode(result["glb_file"])
-        with open(args.output, "wb") as f:
-            f.write(glb_data)
-        print(f"Success! 3D model saved to {args.output}")
-    else:
-        print(f"Failed: {result}")
+#     if "glb_file" in result:
+#         glb_data = base64.b64decode(result["glb_file"])
+#         with open(args.output, "wb") as f:
+#             f.write(glb_data)
+#         print(f"Success! 3D model saved to {args.output}")
+#     else:
+#         print(f"Failed: {result}")
 
-else:
-    runpod.serverless.start({"handler": handler})
+# else:
+#     runpod.serverless.start({"handler": handler})
