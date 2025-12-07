@@ -9,14 +9,36 @@ import tempfile
 import numpy as np
 from PIL import Image
 
-# Setup path to import from the repo
-sys.path.append(os.path.join(os.getcwd(), "notebook"))
+
+# --- Dynamic Path Setup ---
+current_dir = os.getcwd()
+
+# 1. Check if we are inside the repo (e.g., sam-3d-objects/)
+path_option_1 = os.path.join(current_dir, "notebook")
+
+# --- Dynamic Path Setup ---
+current_dir = os.getcwd()
+
+# Define paths relative to where handler.py is running
+repo_root = os.path.join(current_dir, "sam-3d-objects")       # Points to .../sam-3d-objects
+notebook_path = os.path.join(repo_root, "notebook")           # Points to .../sam-3d-objects/notebook
+
+# Add BOTH paths to system path:
+# 1. repo_root allows "import sam3d_objects" to work
+# 2. notebook_path allows "from inference import Inference" to work
+if os.path.exists(repo_root):
+    sys.path.append(repo_root)
+    sys.path.append(notebook_path)
+else:
+    # Fallback for production/Docker paths
+    sys.path.append("/app/sam-3d-objects")
+    sys.path.append("/app/sam-3d-objects/notebook")
+
 try:
     from inference import Inference
-except ImportError:
-    # Fallback if running inside the repo folder directly
-    sys.path.append("/app/sam-3d-objects/notebook")
-    from inference import Inference
+except ImportError as e:
+    print(f"CRITICAL ERROR: Could not import 'inference'. Current sys.path: {sys.path}")
+    raise e
 
 # --- Global Initialization ---
 inference_pipeline = None

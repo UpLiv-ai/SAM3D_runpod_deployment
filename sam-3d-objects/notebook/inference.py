@@ -2,7 +2,11 @@
 import os
 
 # not ideal to put that here
-os.environ["CUDA_HOME"] = os.environ["CONDA_PREFIX"]
+if "CONDA_PREFIX" in os.environ:
+    os.environ["CUDA_HOME"] = os.environ["CONDA_PREFIX"]
+else:
+    # Standard path for RunPod/Docker containers
+    os.environ["CUDA_HOME"] = "/usr/local/cuda"
 os.environ["LIDRA_SKIP_INIT"] = "true"
 
 import sys
