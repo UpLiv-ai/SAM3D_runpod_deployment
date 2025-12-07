@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 # --- Dynamic Path Setup ---
-# This fixes the "ModuleNotFoundError" by finding the repo wherever it is
+# This ensures Python finds the 'inference' module and the 'sam3d_objects' package
 current_dir = os.getcwd()
 repo_root = os.path.join(current_dir, "sam-3d-objects")
 notebook_path = os.path.join(repo_root, "notebook")
@@ -31,8 +31,6 @@ except ImportError:
 # --- Global Initialization ---
 inference_pipeline = None
 device = "cuda" if torch.cuda.is_available() else "cpu"
-# You can set this env var in RunPod UI if your weights are in a different volume
-CHECKPOINT_DIR = os.environ.get("SAM3D_CHECKPOINT_DIR", "/workspace/models/sam3d/checkpoints/hf")
 
 def init_model():
     global inference_pipeline
@@ -40,26 +38,42 @@ def init_model():
         return
         
     print("Initializing SAM 3D Pipeline...")
-    # Adjust this path if your config is located elsewhere
-    config_path = "/workspace/models/sam-3d-objects/checkpoints/pipeline.yaml"
+
+    # --- DYNAMIC VOLUME CHECK ---
+    # 1. Determine the storage base path
+    if os.path.exists("/runpod-volume"):
+        print("DEBUG: Network Volume found. Using /runpod-volume as base.")
+        base_storage = "/runpod-volume"
+    else:
+        print("DEBUG: No volume found. Using /workspace as base.")
+        base_storage = "/workspace"
+
+    # 2. Search for the config file in probable locations relative to the base
+    # We look for 'pipeline.yaml' because that is the entry point for the model
+    possible_paths = [
+        # Path structure seen in your logs: BASE/models/sam-3d-objects/checkpoints
+        os.path.join(base_storage, "models", "sam-3d-objects", "checkpoints", "pipeline.yaml"),
+        # Alternative structure: BASE/sam-3d-objects/checkpoints
+        os.path.join(base_storage, "sam-3d-objects", "checkpoints", "pipeline.yaml"),
+        # Direct structure: BASE/checkpoints
+        os.path.join(base_storage, "checkpoints", "pipeline.yaml")
+    ]
     
-    if not os.path.exists(config_path):
-        # Fallback search
-        possible_paths = [
-            "sam-3d-objects/checkpoints/pipeline.yaml",
-            "checkpoints/pipeline.yaml",
-            "/app/sam-3d-objects/checkpoints/pipeline.yaml"
-        ]
-        for p in possible_paths:
-            if os.path.exists(p):
-                config_path = p
-                break
-        
-    if not os.path.exists(config_path):
-         raise FileNotFoundError(f"Config not found. Checked: {config_path}")
+    config_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            config_path = path
+            print(f"DEBUG: Found config at: {config_path}")
+            break
+            
+    if config_path is None:
+        # Final fallback to environment variable or local relative path
+        config_path = os.environ.get("SAM3D_CONFIG_PATH", "sam-3d-objects/checkpoints/pipeline.yaml")
+        if not os.path.exists(config_path):
+             raise FileNotFoundError(f"Could not find pipeline.yaml in {base_storage} subdirectories.")
 
     inference_pipeline = Inference(config_path, compile=False)
-    print("SAM 3D Pipeline loaded.")
+    print("SAM 3D Pipeline loaded successfully.")
 
 def decode_base64_image(b64_string):
     if "," in b64_string:
@@ -82,7 +96,6 @@ def handler(job):
         mask_pil = decode_base64_image(job_input["mask"]).convert("L")
 
         # 2. Apply EXIF Rotation
-        # This fixes the "swapped dimensions" crash
         image_pil = ImageOps.exif_transpose(image_pil)
         mask_pil = ImageOps.exif_transpose(mask_pil)
 
@@ -108,7 +121,6 @@ def handler(job):
         mask = (mask_np > 128).astype(np.uint8)
         
         # If the mask accidentally has 3 dimensions (H, W, 1), flatten it to (H, W)
-        # The inference pipeline expects 2D and will add the 3rd dimension itself.
         if len(mask.shape) > 2:
             mask = mask[:, :, 0]
 
@@ -148,7 +160,6 @@ def handler(job):
 
 # --- Local Testing Block ---
 if __name__ == "__main__":
-    # You can keep this block for future local testing
     parser = argparse.ArgumentParser(description="Test SAM 3D locally")
     parser.add_argument("--image", required=True, help="Input RGB image path")
     parser.add_argument("--mask", required=True, help="Input Mask image path")
@@ -183,5 +194,4 @@ if __name__ == "__main__":
         print(f"Failed: {result}")
 
 else:
-    # This triggers when running inside RunPod Serverless
     runpod.serverless.start({"handler": handler})
