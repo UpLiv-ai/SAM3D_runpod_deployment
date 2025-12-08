@@ -3,9 +3,10 @@ import torch
 import io
 import os
 import sys
+import argparse
 import tempfile
 import numpy as np
-import requests  # Required for downloading/uploading URLs
+import requests
 from PIL import Image, ImageOps
 
 # --- Dynamic Path Setup ---
@@ -59,18 +60,80 @@ def init_model():
     if config_path is None:
         config_path = os.environ.get("SAM3D_CONFIG_PATH", "sam-3d-objects/checkpoints/pipeline.yaml")
         if not os.path.exists(config_path):
-             raise FileNotFoundError(f"Could not find pipeline.yaml in {base_storage} subdirectories.")
+             # Fallback for local testing if not in standard structure
+             if os.path.exists("sam-3d-objects/checkpoints/pipeline.yaml"):
+                 config_path = "sam-3d-objects/checkpoints/pipeline.yaml"
+             else:
+                 raise FileNotFoundError(f"Could not find pipeline.yaml in {base_storage} or local dirs.")
 
     inference_pipeline = Inference(config_path, compile=False)
     print("SAM 3D Pipeline loaded successfully.")
 
-# --- Helper Functions ---
+# --- Shared Logic ---
+
+def preprocess_inputs(image_pil, mask_pil):
+    """
+    Centralized logic for rotation, resizing, and numpy conversion.
+    """
+    # 1. Apply EXIF Rotation
+    image_pil = ImageOps.exif_transpose(image_pil)
+    mask_pil = ImageOps.exif_transpose(mask_pil)
+
+    # 2. Smart Rotation Check
+    # FIX: First check if they ALREADY match (Square Image Fix). 
+    # If they match exactly, skip the rotation logic entirely.
+    if image_pil.size != mask_pil.size:
+        
+        # Only check for swapped dimensions if they don't already match
+        if image_pil.size == (mask_pil.size[1], mask_pil.size[0]):
+            print(f"Auto-rotating mask to match image orientation.")
+            mask_pil = mask_pil.transpose(Image.ROTATE_90)
+            
+            # If +90 didn't fix it (it's still not matching), try flip 180
+            if image_pil.size != mask_pil.size:
+                 mask_pil = mask_pil.transpose(Image.ROTATE_180)
+
+    # 3. Final Safety Resize
+    if image_pil.size != mask_pil.size:
+        print(f"Resizing mask from {mask_pil.size} to {image_pil.size}")
+        mask_pil = mask_pil.resize(image_pil.size, resample=Image.NEAREST)
+
+    # 4. Convert to NumPy Arrays
+    image = np.array(image_pil)  # (H, W, 3)
+    mask_np = np.array(mask_pil) # (H, W)
+    
+    # 5. Binarize and Ensure 2D
+    mask = (mask_np > 128).astype(np.uint8)
+    if len(mask.shape) > 2:
+        mask = mask[:, :, 0]
+        
+    return image, mask
+
+def process_glb_output(output):
+    """Helper to process the GLB mesh (color fix) and return bytes."""
+    if "glb" in output:
+        mesh_obj = output["glb"]
+        
+        # Color Fix: Ensure vertex colors are opaque
+        if hasattr(mesh_obj.visual, 'vertex_colors') and len(mesh_obj.visual.vertex_colors) > 0:
+                if mesh_obj.visual.vertex_colors.shape[1] == 4:
+                    mesh_obj.visual.vertex_colors[:, 3] = 255
+
+        # Export to Bytes
+        with tempfile.NamedTemporaryFile(suffix=".glb", delete=False) as tmp:
+            mesh_obj.export(tmp.name)
+            tmp.name_to_read = tmp.name
+            tmp.close()
+            
+            with open(tmp.name_to_read, "rb") as f:
+                glb_bytes = f.read()
+            
+            os.unlink(tmp.name_to_read)
+        return glb_bytes
+    return None
 
 def download_image_from_url(url):
-    """Downloads image bytes from a URL and returns a PIL Object."""
-    headers = {
-        "User-Agent": "RunPod-Worker/1.0"
-    }
+    headers = {"User-Agent": "RunPod-Worker/1.0"}
     try:
         response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
@@ -79,9 +142,8 @@ def download_image_from_url(url):
         raise RuntimeError(f"Failed to download image from {url}: {str(e)}")
 
 def upload_to_url(data_bytes, url):
-    """Uploads binary data to a pre-signed URL (Azure Blob Storage)."""
     headers = {
-        'x-ms-blob-type': 'BlockBlob',  # REQUIRED for Azure SAS uploads
+        'x-ms-blob-type': 'BlockBlob',
         'Content-Type': 'model/gltf-binary'
     }
     try:
@@ -92,100 +154,45 @@ def upload_to_url(data_bytes, url):
     except Exception as e:
         raise RuntimeError(f"Failed to upload result to output_location: {str(e)}")
 
-# --- Main Handler ---
+# --- Main Handler (Production) ---
 
 def handler(job):
     job_input = job.get("input", {})
     
-    # 1. Validate Input Structure
     image_url = job_input.get("image_url")
     mask_url = job_input.get("mask_url")
     output_location = job_input.get("output_location")
+    seed = job_input.get("seed", 42)
 
     if not image_url or not mask_url or not output_location:
-        return {
-            "status": "failed",
-            "error": "Input must contain 'image_url', 'mask_url', and 'output_location'."
-        }
+        return {"status": "failed", "error": "Missing image_url, mask_url, or output_location"}
 
     try:
         init_model()
         
-        # 2. Download Images
+        # Download
         print(f"Downloading inputs...")
         image_pil = download_image_from_url(image_url)
-        # Download mask and force grayscale immediately
         mask_pil = download_image_from_url(mask_url).convert("L")
 
-        # 3. Apply EXIF Rotation
-        image_pil = ImageOps.exif_transpose(image_pil)
-        mask_pil = ImageOps.exif_transpose(mask_pil)
+        # Preprocess (Rotation/Resize)
+        image_np, mask_np = preprocess_inputs(image_pil, mask_pil)
 
-        # 4. Smart Rotation Check
-        if image_pil.size == (mask_pil.size[1], mask_pil.size[0]):
-            print(f"Auto-rotating mask to match image orientation.")
-            mask_pil = mask_pil.transpose(Image.ROTATE_90)
-            if image_pil.size != mask_pil.size:
-                 mask_pil = mask_pil.transpose(Image.ROTATE_180)
-
-        # 5. Final Safety Resize
-        if image_pil.size != mask_pil.size:
-            print(f"Resizing mask from {mask_pil.size} to {image_pil.size}")
-            mask_pil = mask_pil.resize(image_pil.size, resample=Image.NEAREST)
-
-        # 6. Convert to NumPy Arrays
-        image = np.array(image_pil)  # (H, W, 3)
-        mask_np = np.array(mask_pil) # (H, W)
+        # Inference
+        output = inference_pipeline(image_np, mask_np, seed=seed)
         
-        # 7. Binarize and Ensure 2D
-        mask = (mask_np > 128).astype(np.uint8)
-        if len(mask.shape) > 2:
-            mask = mask[:, :, 0]
-
-        seed = job_input.get("seed", 42)
+        # Post-Process & Upload
+        glb_bytes = process_glb_output(output)
         
-        # 8. Run Inference
-        output = inference_pipeline(image, mask, seed=seed)
-        
-        # 9. Process GLB Output
-        if "glb" in output:
-            mesh_obj = output["glb"]
-            
-            # Color Fix: Ensure vertex colors are opaque
-            if hasattr(mesh_obj.visual, 'vertex_colors') and len(mesh_obj.visual.vertex_colors) > 0:
-                 if mesh_obj.visual.vertex_colors.shape[1] == 4:
-                     mesh_obj.visual.vertex_colors[:, 3] = 255
-
-            # Export to Bytes
-            with tempfile.NamedTemporaryFile(suffix=".glb", delete=False) as tmp:
-                mesh_obj.export(tmp.name)
-                tmp.name_to_read = tmp.name
-                tmp.close()
-                
-                with open(tmp.name_to_read, "rb") as f:
-                    glb_bytes = f.read()
-                
-                os.unlink(tmp.name_to_read)
-            
-            # 10. Upload to Azure
+        if glb_bytes:
             upload_to_url(glb_bytes, output_location)
-
-            return {
-                "status": "success",
-                "error": None
-            }
+            return {"status": "success", "error": None}
         else:
-            return {
-                "status": "failed",
-                "error": "Model failed to generate GLB output."
-            }
+            return {"status": "failed", "error": "Model failed to generate GLB output."}
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return {
-            "status": "failed",
-            "error": str(e)
-        }
+        return {"status": "failed", "error": str(e)}
 
 runpod.serverless.start({"handler": handler})
