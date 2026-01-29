@@ -1,44 +1,65 @@
-# --- 1. System Dependencies ---
-apt-get update && apt-get install -y \
-    git wget unzip libgl1-mesa-glx libglib2.0-0 build-essential ninja-build
+# Use the specific RunPod base image you successfully tested with 
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
-# --- 2. Basic Python Tools ---
-pip install --upgrade pip
-pip install runpod scipy trimesh imageio[ffmpeg] transformers accelerate
+# --- System Dependencies ---
+# Added 'ninja-build' which is critical for compiling gsplat/kaolin
+RUN apt-get update && apt-get install -y \
+    git wget unzip libgl1-mesa-glx libglib2.0-0 build-essential ninja-build \
+    && rm -rf /var/lib/apt/lists/*
 
-# --- 3. PyTorch3D (Compiling from source - Takes ~10 mins) ---
-export FORCE_CUDA=1
-export TORCH_CUDA_ARCH_LIST="8.0;8.6+PTX"
-pip install "git+https://github.com/facebookresearch/pytorch3d.git"
+# Set working directory
+WORKDIR /app
 
-# --- 4. Kaolin & Custom Renderers ---
-# Fix blinker conflict
-pip install blinker --ignore-installed
+# --- Python Environment Setup ---
 
-# Install Kaolin (using pre-built wheel for speed)
-pip install kaolin==0.18.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu121.html
+# 1. Install Basic Tools & RunPod SDK
+RUN pip install --no-cache-dir runpod scipy trimesh imageio[ffmpeg] transformers accelerate
 
-# Install NVDiffrast, GSplat, and utilities
-pip install git+https://github.com/NVlabs/nvdiffrast.git
-pip install ninja jaxtyping rich
-pip install gsplat
-pip install git+https://github.com/EasternJournalist/utils3d.git
+# 2. Install PyTorch3D
+# We do this early because it takes 10-15 minutes to compile.
+ENV FORCE_CUDA=1
+ENV TORCH_CUDA_ARCH_LIST="8.0;8.6+PTX"
+RUN pip install --no-cache-dir "git+https://github.com/facebookresearch/pytorch3d.git"
 
-# --- 5. Heavy Python Dependencies ---
-pip install seaborn omegaconf hydra-core einops timm \
+# 3. Fix 'blinker' conflict (System vs Pip)
+RUN pip install --no-cache-dir blinker --ignore-installed
+
+# 4. Install Kaolin (Pre-compiled Wheel)
+# Using the specific version/index you verified (0.18.0 for Torch 2.5.1) [cite: 3]
+# This will trigger a PyTorch upgrade to 2.5.1, which is expected.
+RUN pip install --no-cache-dir kaolin==0.18.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu121.html
+
+# 5. Install Custom Rendering Engines (NVDiffrast & GSplat)
+RUN pip install --no-cache-dir git+https://github.com/NVlabs/nvdiffrast.git
+RUN pip install --no-cache-dir ninja jaxtyping rich && \
+    pip install --no-cache-dir gsplat
+
+# 6. Install Specific Utils (Fixes 'utils3d' version mismatch)
+RUN pip install --no-cache-dir git+https://github.com/EasternJournalist/utils3d.git
+
+# 7. Install Remaining Heavy Dependencies
+RUN pip install --no-cache-dir \
+    seaborn omegaconf hydra-core einops timm \
     gradio rembg loguru open3d opencv-python \
     scikit-image lightning jsonlines auto-gptq bitsandbytes
 
-# --- 6. Repository Requirements ---
-# Assuming you are in the folder containing 'MV-SAM3D' and 'Depth-Anything-3'
-# Adjust paths if your folders are named differently
+# --- Project Setup ---
 
-if [ -d "MV-SAM3D" ]; then
-    echo "Installing MV-SAM3D requirements..."
-    pip install -r MV-SAM3D/requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
-fi
+# 8. Copy your project files
+# Expects: handler.py, MV-SAM3D/, and Depth-Anything-3/ in the build context
+COPY . /app
 
-if [ -d "Depth-Anything-3" ]; then
-    echo "Installing Depth-Anything-3 requirements..."
-    pip install -r Depth-Anything-3/requirements.txt
-fi
+# 9. Install Repo Requirements
+# We use the extra-index-url to ensure CUDA versions are found if needed [cite: 6]
+RUN if [ -f MV-SAM3D/requirements.txt ]; then \
+    pip install -r MV-SAM3D/requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121; \
+    fi
+
+RUN if [ -f Depth-Anything-3/requirements.txt ]; then \
+    pip install -r Depth-Anything-3/requirements.txt; \
+    fi
+
+# --- Deployment ---
+
+# Overwrite the CMD to run your handler
+CMD [ "python", "-u", "handler.py" ]
