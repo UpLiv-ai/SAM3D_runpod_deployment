@@ -33,6 +33,7 @@ Usage:
     python run_inference_weighted.py --input_path ./data --mask_prompt stuffed_toy --image_names 0,1,2,3 \
         --da3_output ./da3_outputs/example/da3_output.npz --stage2_weight_source visibility
 """
+import os
 import sys
 import argparse
 from pathlib import Path
@@ -2026,9 +2027,20 @@ def run_weighted_inference(
             merge_da3_glb: Merge SAM3D output with DA3 scene
             overlay_pointmap: Overlay SAM3D on View 0 pointmap
     """
-    config_path = f"checkpoints/{model_tag}/pipeline.yaml"
-    if not Path(config_path).exists():
-        raise FileNotFoundError(f"Model config file not found: {config_path}")
+    # -----------------------------
+    if os.path.exists("/runpod-volume"):
+        base_storage = "/runpod-volume"
+    else:
+        base_storage = "/workspace"
+    
+    # Check if the user passed a direct path first, otherwise use the volume path
+    if os.path.exists(model_tag) and model_tag.endswith(".yaml"):
+        config_path = model_tag
+    else:
+        config_path = os.path.join(base_storage, "models", "sam-3d-objects", "checkpoints", "pipeline.yaml")
+    
+    print(f"DEBUG: Using config path: {config_path}")
+    # -----------------------------
     
     logger.info(f"Loading model: {config_path}")
     inference = Inference(config_path, compile=False)
