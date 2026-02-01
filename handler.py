@@ -3,7 +3,6 @@ import os
 import subprocess
 import shutil
 import requests
-import glob
 import sys
 import zipfile
 import io
@@ -16,6 +15,7 @@ MV_SAM3D_DIR = os.path.join(BASE_DIR, "MV-SAM3D")
 DA3_SCRIPT_PATH = os.path.join(MV_SAM3D_DIR, "scripts", "run_da3.py") 
 INFERENCE_SCRIPT_PATH = os.path.join(MV_SAM3D_DIR, "run_inference_weighted.py")
 
+# Fallback path check
 if not os.path.exists(DA3_SCRIPT_PATH):
     DA3_SCRIPT_PATH = os.path.join(MV_SAM3D_DIR, "run_da3.py")
 
@@ -42,7 +42,8 @@ def find_local_da3_weights():
     print("No local DA3 weights found. Script will attempt download.")
     return None
 
-def process_and_save_image(source, save_path, is_mask=False):
+def load_image_from_source(source):
+    """Helper to download or open an image and return a PIL Image object."""
     try:
         if source.startswith("http"):
             resp = requests.get(source, stream=True, timeout=30)
@@ -51,23 +52,48 @@ def process_and_save_image(source, save_path, is_mask=False):
             img = Image.open(image_data)
         else:
             img = Image.open(source)
-
-        # 1. Fix Orientation
-        img = ImageOps.exif_transpose(img)
-
-        # 2. Format Handling
-        if is_mask:
-            if img.mode != "RGBA":
-                print(f"Warning: Mask {source} is {img.mode}, converting to RGBA.")
-                img = img.convert("RGBA")
-        else:
-            img = img.convert("RGB") 
-
-        # 3. Save as PNG
-        img.save(save_path, format="PNG")
         
+        # Standardize orientation
+        img = ImageOps.exif_transpose(img)
+        return img
     except Exception as e:
-        raise RuntimeError(f"Failed to process {source}: {e}")
+        raise RuntimeError(f"Failed to load image from {source}: {e}")
+
+def process_and_save_image(source, save_path):
+    """Saves a standard RGB image (for the input images folder)."""
+    try:
+        img = load_image_from_source(source)
+        img = img.convert("RGB")
+        img.save(save_path, format="PNG")
+    except Exception as e:
+        raise RuntimeError(f"Failed to save image {source}: {e}")
+
+def save_rgba_mask_from_inputs(image_source, mask_source, save_path):
+    """
+    Loads the original image and the binary mask, combines them into 
+    an RGBA image (Image + Mask as Alpha), and saves it.
+    """
+    try:
+        # Load the visual image (RGB)
+        img = load_image_from_source(image_source)
+        img = img.convert("RGB")
+
+        # Load the binary mask (Grayscale)
+        mask = load_image_from_source(mask_source)
+        mask = mask.convert("L") # Convert to grayscale (0=black, 255=white)
+
+        # Ensure mask matches image size
+        if mask.size != img.size:
+            print(f"Resizing mask {mask_source} to match image dimensions {img.size}")
+            mask = mask.resize(img.size, Image.NEAREST)
+
+        # Put the mask into the alpha channel of the image
+        # Assuming Mask: White (255) = Object, Black (0) = Background
+        img.putalpha(mask)
+
+        img.save(save_path, format="PNG")
+    except Exception as e:
+        raise RuntimeError(f"Failed to create RGBA mask from {image_source} and {mask_source}: {e}")
 
 def package_debug_zip(work_dir, mv_sam3d_vis_dir, output_zip_path):
     print(f"Packaging debug info into {output_zip_path}...")
@@ -99,13 +125,13 @@ def handler(job):
     if len(image_urls) != len(mask_urls):
         return {"status": "failed", "error": "Mismatch between image and mask counts."}
 
-    # Setup Work Dirs
     work_dir = os.path.abspath("temp_work_dir")
     inputs_root = os.path.join(work_dir, "data", "inputs")
     input_images_dir = os.path.join(inputs_root, "images")
     input_masks_dir = os.path.join(inputs_root, mask_folder_name)
     da3_output_dir = os.path.join(work_dir, "da3_output")
     
+    # Clean up previous runs
     if os.path.exists(work_dir): shutil.rmtree(work_dir)
     os.makedirs(input_images_dir, exist_ok=True)
     os.makedirs(input_masks_dir, exist_ok=True)
@@ -122,18 +148,21 @@ def handler(job):
             img_save_path = os.path.join(input_images_dir, filename)
             mask_save_path = os.path.join(input_masks_dir, filename)
             
-            process_and_save_image(img_url, img_save_path, is_mask=False)
-            process_and_save_image(mask_url, mask_save_path, is_mask=True)
+            # 1. Save the plain RGB image for DA3/Inference
+            process_and_save_image(img_url, img_save_path)
+            
+            # 2. Combine RGB Image + Binary Mask -> RGBA Mask file
+            save_rgba_mask_from_inputs(img_url, mask_url, mask_save_path)
             
             image_names_no_ext.append(str(i))
 
-        # Run DA3
         print("--- Running Depth Anything 3 ---")
         da3_weights_path = find_local_da3_weights()
         da3_cmd = [
             "python", DA3_SCRIPT_PATH,
             "--image_dir", input_images_dir,
             "--output_dir", da3_output_dir,
+            "--process_res", "756" # Use higher res for better pose estimation
         ]
         if da3_weights_path:
             da3_cmd.extend(["--model_path", da3_weights_path])
@@ -144,14 +173,12 @@ def handler(job):
         if not os.path.exists(da3_npz):
             raise RuntimeError("DA3 failed to generate da3_output.npz")
 
-        # Cleanup Stale Data
         vis_output_dir = os.path.join(MV_SAM3D_DIR, "visualization")
         if os.path.exists(vis_output_dir):
             print(f"--- Cleaning up stale data in {vis_output_dir} ---")
             shutil.rmtree(vis_output_dir)
 
-        # Run MV-SAM3D Inference
-        print(f"--- Running MV-SAM3D Inference (Mixed Weighting) ---")
+        print(f"--- Running MV-SAM3D Inference (ROBUST MIXED MODE) ---")
         img_names_arg = ",".join(image_names_no_ext)
         inference_cmd = [
             "python", INFERENCE_SCRIPT_PATH,
@@ -159,15 +186,20 @@ def handler(job):
             "--mask_prompt", mask_folder_name,
             "--image_names", img_names_arg,
             "--da3_output", da3_npz,
-            # --- CRITICAL CHANGE ---
-            # Replaced "visibility" with "mixed" to ensure texture is applied 
-            # even if geometry self-occlusion checks fail.
-            "--stage2_weight_source", "mixed", 
-            "--stage2_weight_combine_mode", "average" 
+            
+            # --- Robust Parameters ---
+            "--stage2_weight_source", "mixed",       
+            "--stage2_entropy_alpha", "60.0",        
+            "--stage2_visibility_alpha", "60.0",
+            "--stage2_visibility_weight_ratio", "0.6",
+            "--self_occlusion_tolerance", "6.0"      
         ]
+        
+        # Verify the command before running
+        print("DEBUG COMMAND:", " ".join(inference_cmd))
+        
         subprocess.run(inference_cmd, cwd=MV_SAM3D_DIR, env=custom_env, check=True)
 
-        # Package Debug ZIP
         print("--- Packaging Debug Data ---")
         zip_path = os.path.abspath("final_debug.zip")
         package_debug_zip(work_dir, vis_output_dir, zip_path)
@@ -194,17 +226,15 @@ def handler(job):
         return {"status": "failed", "error": str(e)}
 
 if __name__ == "__main__":
-    print("--- STARTING LOCAL DEBUG TEST (Bear + Mixed Weighting) ---")
-    
-    test_images = ["1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png", "8.png"]
-    test_masks = ["1_mask.png", "2_mask.png", "3_mask.png", "4_mask.png", "5_mask.png", "6_mask.png", "7_mask.png", "8_mask.png"]
+    print("--- STARTING LOCAL DEBUG TEST ---")
+    # You can update these lists for local testing
+    test_images = ["piano_test_img_1.JPG", "piano_test_img_2.JPG", "piano_test_img_3.JPG"] 
+    test_masks = ["piano_test_img_1_mask.png", "piano_test_img_2_mask.png", "piano_test_img_3_mask.png"]
     
     valid_pairs = []
     for img, mask in zip(test_images, test_masks):
         if os.path.exists(img) and os.path.exists(mask):
             valid_pairs.append((img, mask))
-        else:
-            print(f"Skipping missing pair: {img} / {mask}")
 
     if valid_pairs:
         valid_imgs, valid_msks = zip(*valid_pairs)
@@ -212,7 +242,7 @@ if __name__ == "__main__":
             "input": {
                 "image_urls": list(valid_imgs),
                 "mask_urls": list(valid_msks),
-                "output_location": "local_debug_bear_mixed.zip",
+                "output_location": "local_debug.zip",
                 "mask_prompt": "object"
             }
         }
@@ -220,6 +250,7 @@ if __name__ == "__main__":
         result = handler(test_job)
         print(f"\nFinal Result: {result}")
     else:
-        print("No valid image/mask pairs found!")
+        # Fallback if no local files found, just to verify syntax
+        print("No local files found for debug test, skipping execution.")
 else:
     runpod.serverless.start({"handler": handler})
