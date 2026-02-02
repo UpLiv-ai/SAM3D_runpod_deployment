@@ -25,7 +25,7 @@ checkpoints/
 # ============================================
 # Output Results
 # ============================================
-visualization/
+visualizations/
 *.glb
 *.ply
 *.obj
