@@ -1964,6 +1964,8 @@ def run_weighted_inference(
     stage2_steps: int = 25,
     decode_formats: List[str] = None,
     model_tag: str = "hf",
+    save_all: bool = False,
+    handoff_dir: str = None,
     # Stage 1 (Shape) Weighting parameters
     stage1_weighting: bool = True,
     stage1_entropy_layer: int = 9,
@@ -2588,398 +2590,404 @@ def run_weighted_inference(
     print(f"{'='*60}")
     
     glb_path = None
-    if 'glb' in result and result['glb'] is not None:
-        glb_path = output_dir / "result.glb"
-        result['glb'].export(str(glb_path))
-        saved_files.append("result.glb")
-        print(f"✓ GLB file saved to: {glb_path}")
-        
-        # Merge with DA3 scene.glb if requested (with alignment)
-        if merge_da3_glb and da3_dir is not None:
-            # Prepare pose parameters for alignment
-            # Note: SAM3D pose parameters are already in real-world scale
-            sam3d_pose = {}
-            if 'scale' in result:
-                sam3d_pose['scale'] = result['scale'].cpu().numpy() if torch.is_tensor(result['scale']) else result['scale']
-            if 'rotation' in result:
-                sam3d_pose['rotation'] = result['rotation'].cpu().numpy() if torch.is_tensor(result['rotation']) else result['rotation']
-            if 'translation' in result:
-                sam3d_pose['translation'] = result['translation'].cpu().numpy() if torch.is_tensor(result['translation']) else result['translation']
+    if not save_all: # If not saving all, then just save GLB if available
+        if 'glb' in result and result['glb'] is not None:
+            glb_path = os.path.join(handoff_dir, "result.glb")
+            result['glb'].export(str(glb_path))
+            saved_files.append("result.glb")
+            print(f"✓ GLB file saved to: {glb_path}")
+    else:
+        if 'glb' in result and result['glb'] is not None:
+            glb_path = output_dir / "result.glb"
+            result['glb'].export(str(glb_path))
+            saved_files.append("result.glb")
+            print(f"✓ GLB file saved to: {glb_path}")
             
-            if sam3d_pose:
-                # Merge with DA3's complete scene.glb
-                merged_path = merge_glb_with_da3_aligned(
-                    glb_path, da3_dir, sam3d_pose
-                )
-                if merged_path:
-                    saved_files.append(merged_path.name)
-                    print(f"✓ Merged GLB with DA3 scene saved to: {merged_path}")
-            else:
-                logger.warning("Cannot align: missing SAM3D pose parameters")
-        elif merge_da3_glb and da3_dir is None:
-            logger.warning("--merge_da3_glb specified but no DA3 output directory available (need --da3_output)")
-        
-        # Overlay SAM3D result on input pointmap for pose visualization
-        # Only overlay on actually used pointmaps
-        if overlay_pointmap:
-            sam3d_pose = {}
-            if 'scale' in result:
-                sam3d_pose['scale'] = result['scale'].cpu().numpy() if torch.is_tensor(result['scale']) else result['scale']
-            if 'rotation' in result:
-                sam3d_pose['rotation'] = result['rotation'].cpu().numpy() if torch.is_tensor(result['rotation']) else result['rotation']
-            if 'translation' in result:
-                sam3d_pose['translation'] = result['translation'].cpu().numpy() if torch.is_tensor(result['translation']) else result['translation']
-            
-            if sam3d_pose:
-                pointmap_data = None
-                pm_scale_np = None
-                pm_shift_np = None
+            # Merge with DA3 scene.glb if requested (with alignment)
+            if merge_da3_glb and da3_dir is not None:
+                # Prepare pose parameters for alignment
+                # Note: SAM3D pose parameters are already in real-world scale
+                sam3d_pose = {}
+                if 'scale' in result:
+                    sam3d_pose['scale'] = result['scale'].cpu().numpy() if torch.is_tensor(result['scale']) else result['scale']
+                if 'rotation' in result:
+                    sam3d_pose['rotation'] = result['rotation'].cpu().numpy() if torch.is_tensor(result['rotation']) else result['rotation']
+                if 'translation' in result:
+                    sam3d_pose['translation'] = result['translation'].cpu().numpy() if torch.is_tensor(result['translation']) else result['translation']
                 
-                if 'raw_view_pointmaps' in result and result['raw_view_pointmaps']:
-                    pointmap_data = result['raw_view_pointmaps'][0]
-                    logger.info("[Overlay] Using raw_view_pointmaps[0] (metric)")
-                elif 'pointmap' in result:
-                    pointmap_data = result['pointmap']
-                    logger.info("[Overlay] Using result['pointmap'] (metric)")
-                elif 'view_ss_input_dicts' in result and result['view_ss_input_dicts']:
-                    internal_pm = result['view_ss_input_dicts'][0].get('pointmap')
-                    if internal_pm is not None:
-                        pointmap_data = internal_pm
-                        logger.info("[Overlay] Using normalized pointmap from view_ss_input_dicts")
-                    # Try to read scale/shift from per-view input
-                    pm_scale = result['view_ss_input_dicts'][0].get('pointmap_scale')
-                    pm_shift = result['view_ss_input_dicts'][0].get('pointmap_shift')
-                    if pm_scale is not None:
-                        pm_scale_np = pm_scale.detach().cpu().numpy() if torch.is_tensor(pm_scale) else np.array(pm_scale)
-                    if pm_shift is not None:
-                        pm_shift_np = pm_shift.detach().cpu().numpy() if torch.is_tensor(pm_shift) else np.array(pm_shift)
-                else:
-                    logger.warning("Overlay: no pointmap source found")
-                
-                if pointmap_data is not None:
-                    overlay_path = overlay_sam3d_on_pointmap(
-                        glb_path,
-                        pointmap_data,
-                        sam3d_pose,
-                        input_image=view_images[0] if view_images else None,
-                        output_path=None,
-                        pointmap_scale=pm_scale_np,
-                        pointmap_shift=pm_shift_np,
+                if sam3d_pose:
+                    # Merge with DA3's complete scene.glb
+                    merged_path = merge_glb_with_da3_aligned(
+                        glb_path, da3_dir, sam3d_pose
                     )
-                    if overlay_path:
-                        saved_files.append(overlay_path.name)
-                        print(f"✓ Overlay saved to: {overlay_path}")
+                    if merged_path:
+                        saved_files.append(merged_path.name)
+                        print(f"✓ Merged GLB with DA3 scene saved to: {merged_path}")
                 else:
-                    logger.warning("Cannot create overlay: missing input pointmap")
-    
-    if 'gs' in result:
-        output_path = output_dir / "result.ply"
-        result['gs'].save_ply(str(output_path))
-        saved_files.append("result.ply")
-        print(f"✓ Gaussian Splatting (PLY) saved to: {output_path}")
-    elif 'gaussian' in result:
-        if isinstance(result['gaussian'], list) and len(result['gaussian']) > 0:
+                    logger.warning("Cannot align: missing SAM3D pose parameters")
+            elif merge_da3_glb and da3_dir is None:
+                logger.warning("--merge_da3_glb specified but no DA3 output directory available (need --da3_output)")
+            
+            # Overlay SAM3D result on input pointmap for pose visualization
+            # Only overlay on actually used pointmaps
+            if overlay_pointmap:
+                sam3d_pose = {}
+                if 'scale' in result:
+                    sam3d_pose['scale'] = result['scale'].cpu().numpy() if torch.is_tensor(result['scale']) else result['scale']
+                if 'rotation' in result:
+                    sam3d_pose['rotation'] = result['rotation'].cpu().numpy() if torch.is_tensor(result['rotation']) else result['rotation']
+                if 'translation' in result:
+                    sam3d_pose['translation'] = result['translation'].cpu().numpy() if torch.is_tensor(result['translation']) else result['translation']
+                
+                if sam3d_pose:
+                    pointmap_data = None
+                    pm_scale_np = None
+                    pm_shift_np = None
+                    
+                    if 'raw_view_pointmaps' in result and result['raw_view_pointmaps']:
+                        pointmap_data = result['raw_view_pointmaps'][0]
+                        logger.info("[Overlay] Using raw_view_pointmaps[0] (metric)")
+                    elif 'pointmap' in result:
+                        pointmap_data = result['pointmap']
+                        logger.info("[Overlay] Using result['pointmap'] (metric)")
+                    elif 'view_ss_input_dicts' in result and result['view_ss_input_dicts']:
+                        internal_pm = result['view_ss_input_dicts'][0].get('pointmap')
+                        if internal_pm is not None:
+                            pointmap_data = internal_pm
+                            logger.info("[Overlay] Using normalized pointmap from view_ss_input_dicts")
+                        # Try to read scale/shift from per-view input
+                        pm_scale = result['view_ss_input_dicts'][0].get('pointmap_scale')
+                        pm_shift = result['view_ss_input_dicts'][0].get('pointmap_shift')
+                        if pm_scale is not None:
+                            pm_scale_np = pm_scale.detach().cpu().numpy() if torch.is_tensor(pm_scale) else np.array(pm_scale)
+                        if pm_shift is not None:
+                            pm_shift_np = pm_shift.detach().cpu().numpy() if torch.is_tensor(pm_shift) else np.array(pm_shift)
+                    else:
+                        logger.warning("Overlay: no pointmap source found")
+                    
+                    if pointmap_data is not None:
+                        overlay_path = overlay_sam3d_on_pointmap(
+                            glb_path,
+                            pointmap_data,
+                            sam3d_pose,
+                            input_image=view_images[0] if view_images else None,
+                            output_path=None,
+                            pointmap_scale=pm_scale_np,
+                            pointmap_shift=pm_shift_np,
+                        )
+                        if overlay_path:
+                            saved_files.append(overlay_path.name)
+                            print(f"✓ Overlay saved to: {overlay_path}")
+                    else:
+                        logger.warning("Cannot create overlay: missing input pointmap")
+        
+        if 'gs' in result:
             output_path = output_dir / "result.ply"
-            result['gaussian'][0].save_ply(str(output_path))
+            result['gs'].save_ply(str(output_path))
             saved_files.append("result.ply")
             print(f"✓ Gaussian Splatting (PLY) saved to: {output_path}")
-    
-    # Save pose and geometry parameters
-    # These are important for converting from canonical space to metric/camera space
-    # Reference: https://github.com/Stability-AI/stable-point-aware-3d/issues/XXX
-    # - translation, rotation, scale: transform from canonical ([-0.5, 0.5]) to camera/metric space
-    # - pointmap_scale: the scale factor used to normalize the pointmap (needed for real-world alignment)
-    params = {}
-    
-    # Pose parameters
-    if 'translation' in result:
-        params['translation'] = result['translation'].cpu().numpy() if torch.is_tensor(result['translation']) else result['translation']
-    if 'rotation' in result:
-        params['rotation'] = result['rotation'].cpu().numpy() if torch.is_tensor(result['rotation']) else result['rotation']
-    if 'scale' in result:
-        params['scale'] = result['scale'].cpu().numpy() if torch.is_tensor(result['scale']) else result['scale']
-    if 'downsample_factor' in result:
-        params['downsample_factor'] = float(result['downsample_factor']) if torch.is_tensor(result['downsample_factor']) else result['downsample_factor']
-    
-    # Pointmap normalization parameters (for real-world alignment)
-    if 'pointmap_scale' in result and result['pointmap_scale'] is not None:
-        params['pointmap_scale'] = result['pointmap_scale'].cpu().numpy() if torch.is_tensor(result['pointmap_scale']) else result['pointmap_scale']
-    if 'pointmap_shift' in result and result['pointmap_shift'] is not None:
-        params['pointmap_shift'] = result['pointmap_shift'].cpu().numpy() if torch.is_tensor(result['pointmap_shift']) else result['pointmap_shift']
-    
-    # Geometry parameters
-    if 'coords' in result:
-        params['coords'] = result['coords'].cpu().numpy() if torch.is_tensor(result['coords']) else result['coords']
-    
-    if params:
-        params_path = output_dir / "params.npz"
-        np.savez(params_path, **params)
-        saved_files.append("params.npz")
-        print(f"✓ Parameters saved to: {params_path}")
-    
-    print(f"\n{'='*60}")
-    print(f"All output files saved to: {output_dir}")
-    print(f"Saved files: {', '.join(saved_files)}")
-    print(f"{'='*60}")
-    
-    if attention_logger is not None:
-        attention_logger.close()
-    
-    # Save weighting analysis if enabled
-    if weight_manager is not None and visualize_weights:
-        logger.info("Saving weight visualizations...")
+        elif 'gaussian' in result:
+            if isinstance(result['gaussian'], list) and len(result['gaussian']) > 0:
+                output_path = output_dir / "result.ply"
+                result['gaussian'][0].save_ply(str(output_path))
+                saved_files.append("result.ply")
+                print(f"✓ Gaussian Splatting (PLY) saved to: {output_path}")
         
-        # Save weights and visualizations
-        weights_dir = output_dir / "weights"
-        weights_dir.mkdir(parents=True, exist_ok=True)
+        # Save pose and geometry parameters
+        # These are important for converting from canonical space to metric/camera space
+        # Reference: https://github.com/Stability-AI/stable-point-aware-3d/issues/XXX
+        # - translation, rotation, scale: transform from canonical ([-0.5, 0.5]) to camera/metric space
+        # - pointmap_scale: the scale factor used to normalize the pointmap (needed for real-world alignment)
+        params = {}
         
-        analysis_data = weight_manager.get_analysis_data()
-        weights_downsampled = analysis_data.get("weights", {})  # Weights in downsampled dimension
-        weights_expanded = analysis_data.get("expanded_weights", {})  # Expanded weights
-        entropy_per_view = analysis_data.get("entropy_per_view", {})
-        original_coords = analysis_data.get("original_coords")  # Original coords
-        downsampled_coords = analysis_data.get("downsampled_coords")  # Downsampled coords
-        downsample_idx = analysis_data.get("downsample_idx")  # Index mapping
+        # Pose parameters
+        if 'translation' in result:
+            params['translation'] = result['translation'].cpu().numpy() if torch.is_tensor(result['translation']) else result['translation']
+        if 'rotation' in result:
+            params['rotation'] = result['rotation'].cpu().numpy() if torch.is_tensor(result['rotation']) else result['rotation']
+        if 'scale' in result:
+            params['scale'] = result['scale'].cpu().numpy() if torch.is_tensor(result['scale']) else result['scale']
+        if 'downsample_factor' in result:
+            params['downsample_factor'] = float(result['downsample_factor']) if torch.is_tensor(result['downsample_factor']) else result['downsample_factor']
         
-        # Log dimension info
-        if weights_downsampled:
-            sample_w = list(weights_downsampled.values())[0]
-            logger.info(f"Downsampled weights dimension: {sample_w.shape[0]}")
-        if weights_expanded:
-            sample_w = list(weights_expanded.values())[0]
-            logger.info(f"Expanded weights dimension: {sample_w.shape[0]}")
-        if original_coords is not None:
-            logger.info(f"Original coords shape: {original_coords.shape}")
-        if downsampled_coords is not None:
-            logger.info(f"Downsampled coords shape: {downsampled_coords.shape}")
+        # Pointmap normalization parameters (for real-world alignment)
+        if 'pointmap_scale' in result and result['pointmap_scale'] is not None:
+            params['pointmap_scale'] = result['pointmap_scale'].cpu().numpy() if torch.is_tensor(result['pointmap_scale']) else result['pointmap_scale']
+        if 'pointmap_shift' in result and result['pointmap_shift'] is not None:
+            params['pointmap_shift'] = result['pointmap_shift'].cpu().numpy() if torch.is_tensor(result['pointmap_shift']) else result['pointmap_shift']
         
-        # Save weights as .pt file
-        torch.save({
-            "weights_downsampled": {k: v.cpu() for k, v in weights_downsampled.items()} if weights_downsampled else {},
-            "weights_expanded": {k: v.cpu() for k, v in weights_expanded.items()} if weights_expanded else {},
-            "entropy": {k: v.cpu() for k, v in entropy_per_view.items()} if entropy_per_view else {},
-            "config": {
-                "entropy_alpha": weighting_config.entropy_alpha,
-                "attention_layer": weighting_config.attention_layer,
-                "attention_step": weighting_config.attention_step,
-            },
-            "original_coords": original_coords.cpu() if original_coords is not None else None,
-            "downsampled_coords": downsampled_coords.cpu() if downsampled_coords is not None else None,
-            "downsample_idx": downsample_idx.cpu() if downsample_idx is not None else None,
-        }, weights_dir / "fusion_weights.pt")
+        # Geometry parameters
+        if 'coords' in result:
+            params['coords'] = result['coords'].cpu().numpy() if torch.is_tensor(result['coords']) else result['coords']
         
-        logger.info(f"Saved fusion weights to {weights_dir / 'fusion_weights.pt'}")
+        if params:
+            params_path = output_dir / "params.npz"
+            np.savez(params_path, **params)
+            saved_files.append("params.npz")
+            print(f"✓ Parameters saved to: {params_path}")
         
-        # ============ Weight Analysis ============
-        analysis_log = weights_dir / "weight_analysis.log"
-        with open(analysis_log, "w") as f:
-            def log_analysis(msg):
-                f.write(msg + "\n")
-                logger.info(msg)
-            
-            log_analysis("=" * 60)
-            log_analysis("Weight Analysis Report")
-            log_analysis("=" * 60)
-            log_analysis(f"Number of views: {len(weights_downsampled)}")
-            log_analysis(f"Entropy alpha: {weighting_config.entropy_alpha}")
-            log_analysis(f"Attention layer: {weighting_config.attention_layer}")
-            log_analysis(f"Attention step: {weighting_config.attention_step}")
-            
-            # Entropy analysis
-            if entropy_per_view:
-                log_analysis("\n--- Entropy Analysis ---")
-                entropy_values = []
-                for view_idx, e in sorted(entropy_per_view.items()):
-                    log_analysis(
-                        f"  View {view_idx}: min={e.min():.4f}, max={e.max():.4f}, "
-                        f"mean={e.mean():.4f}, std={e.std():.4f}"
-                    )
-                    entropy_values.append(e)
-                
-                # Cross-view entropy difference
-                if len(entropy_values) > 1:
-                    entropy_stack = torch.stack(entropy_values, dim=0)
-                    view_std = entropy_stack.std(dim=0)
-                    log_analysis(f"\n  Cross-view entropy std (per latent):")
-                    log_analysis(f"    min={view_std.min():.4f}, max={view_std.max():.4f}, mean={view_std.mean():.4f}")
-            
-            # Weight analysis
-            log_analysis("\n--- Weight Analysis (Downsampled) ---")
-            for view_idx, w in sorted(weights_downsampled.items()):
-                log_analysis(
-                    f"  View {view_idx}: min={w.min():.6f}, max={w.max():.6f}, "
-                    f"mean={w.mean():.6f}, std={w.std():.6f}"
-                )
-            
-            # Check weight sum
-            views = sorted(weights_downsampled.keys())
-            weight_sum = sum(weights_downsampled[v] for v in views)
-            log_analysis(f"\n  Weight sum: min={weight_sum.min():.4f}, max={weight_sum.max():.4f}")
-            
-            # Cross-view weight difference
-            weight_stack = torch.stack([weights_downsampled[v] for v in views], dim=0)
-            view_std = weight_stack.std(dim=0)
-            log_analysis(f"\n  Cross-view weight std (per latent):")
-            log_analysis(f"    min={view_std.min():.6f}, max={view_std.max():.6f}, mean={view_std.mean():.6f}")
-            
-            # Find latents with most weight variation
-            top_k = 5
-            top_indices = torch.argsort(view_std, descending=True)[:top_k]
-            log_analysis(f"\n  Top {top_k} latents with most weight variation:")
-            for idx in top_indices:
-                log_analysis(f"    Latent {idx.item()}: std={view_std[idx]:.4f}")
-                for v in views:
-                    log_analysis(f"      View {v}: {weights_downsampled[v][idx]:.4f}")
-            
-            log_analysis("\n" + "=" * 60)
+        print(f"\n{'='*60}")
+        print(f"All output files saved to: {output_dir}")
+        print(f"Saved files: {', '.join(saved_files)}")
+        print(f"{'='*60}")
         
-        logger.info(f"Saved weight analysis to {analysis_log}")
+        if attention_logger is not None:
+            attention_logger.close()
         
-        # Generate visualizations
-        try:
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-            # numpy is already imported at module level as np
+        # Save weighting analysis if enabled
+        if weight_manager is not None and visualize_weights:
+            logger.info("Saving weight visualizations...")
             
-            # Weight distribution histogram (downsampled)
+            # Save weights and visualizations
+            weights_dir = output_dir / "weights"
+            weights_dir.mkdir(parents=True, exist_ok=True)
+            
+            analysis_data = weight_manager.get_analysis_data()
+            weights_downsampled = analysis_data.get("weights", {})  # Weights in downsampled dimension
+            weights_expanded = analysis_data.get("expanded_weights", {})  # Expanded weights
+            entropy_per_view = analysis_data.get("entropy_per_view", {})
+            original_coords = analysis_data.get("original_coords")  # Original coords
+            downsampled_coords = analysis_data.get("downsampled_coords")  # Downsampled coords
+            downsample_idx = analysis_data.get("downsample_idx")  # Index mapping
+            
+            # Log dimension info
             if weights_downsampled:
-                fig, axes = plt.subplots(1, len(weights_downsampled), figsize=(4 * len(weights_downsampled), 4))
-                if len(weights_downsampled) == 1:
-                    axes = [axes]
-                
-                for ax, (view_idx, w) in zip(axes, sorted(weights_downsampled.items())):
-                    w_np = w.cpu().numpy()
-                    ax.hist(w_np, bins=50, alpha=0.7, edgecolor='black')
-                    ax.set_xlabel('Weight')
-                    ax.set_ylabel('Count')
-                    ax.set_title(f'View {view_idx} (downsampled)\nmean={w_np.mean():.4f}, std={w_np.std():.4f}')
-                
-                plt.tight_layout()
-                plt.savefig(weights_dir / 'weight_distribution_downsampled.png', dpi=150)
-                plt.close()
-                logger.info("Saved downsampled weight distribution plot")
-            
-            # Weight distribution histogram (expanded)
+                sample_w = list(weights_downsampled.values())[0]
+                logger.info(f"Downsampled weights dimension: {sample_w.shape[0]}")
             if weights_expanded:
-                fig, axes = plt.subplots(1, len(weights_expanded), figsize=(4 * len(weights_expanded), 4))
-                if len(weights_expanded) == 1:
-                    axes = [axes]
-                
-                for ax, (view_idx, w) in zip(axes, sorted(weights_expanded.items())):
-                    w_np = w.cpu().numpy()
-                    ax.hist(w_np, bins=50, alpha=0.7, edgecolor='black', color='green')
-                    ax.set_xlabel('Weight')
-                    ax.set_ylabel('Count')
-                    ax.set_title(f'View {view_idx} (expanded)\nmean={w_np.mean():.4f}, std={w_np.std():.4f}')
-                
-                plt.tight_layout()
-                plt.savefig(weights_dir / 'weight_distribution_expanded.png', dpi=150)
-                plt.close()
-                logger.info("Saved expanded weight distribution plot")
+                sample_w = list(weights_expanded.values())[0]
+                logger.info(f"Expanded weights dimension: {sample_w.shape[0]}")
+            if original_coords is not None:
+                logger.info(f"Original coords shape: {original_coords.shape}")
+            if downsampled_coords is not None:
+                logger.info(f"Downsampled coords shape: {downsampled_coords.shape}")
             
-            # Entropy distribution histogram
-            if entropy_per_view:
-                fig, axes = plt.subplots(1, len(entropy_per_view), figsize=(4 * len(entropy_per_view), 4))
-                if len(entropy_per_view) == 1:
-                    axes = [axes]
-                
-                for ax, (view_idx, e) in zip(axes, sorted(entropy_per_view.items())):
-                    e_np = e.cpu().numpy()
-                    ax.hist(e_np, bins=50, alpha=0.7, edgecolor='black', color='orange')
-                    ax.set_xlabel('Entropy')
-                    ax.set_ylabel('Count')
-                    ax.set_title(f'View {view_idx}\nmean={e_np.mean():.4f}, std={e_np.std():.4f}')
-                
-                plt.tight_layout()
-                plt.savefig(weights_dir / 'entropy_distribution.png', dpi=150)
-                plt.close()
-                logger.info("Saved entropy distribution plot")
+            # Save weights as .pt file
+            torch.save({
+                "weights_downsampled": {k: v.cpu() for k, v in weights_downsampled.items()} if weights_downsampled else {},
+                "weights_expanded": {k: v.cpu() for k, v in weights_expanded.items()} if weights_expanded else {},
+                "entropy": {k: v.cpu() for k, v in entropy_per_view.items()} if entropy_per_view else {},
+                "config": {
+                    "entropy_alpha": weighting_config.entropy_alpha,
+                    "attention_layer": weighting_config.attention_layer,
+                    "attention_step": weighting_config.attention_step,
+                },
+                "original_coords": original_coords.cpu() if original_coords is not None else None,
+                "downsampled_coords": downsampled_coords.cpu() if downsampled_coords is not None else None,
+                "downsample_idx": downsample_idx.cpu() if downsample_idx is not None else None,
+            }, weights_dir / "fusion_weights.pt")
             
-            # 3D visualization with DOWNSAMPLED coords (where attention is computed)
-            if downsampled_coords is not None and weights_downsampled:
-                coords_np = downsampled_coords.cpu().numpy()
-                x, y, z = coords_np[:, 1], coords_np[:, 2], coords_np[:, 3]
+            logger.info(f"Saved fusion weights to {weights_dir / 'fusion_weights.pt'}")
+            
+            # ============ Weight Analysis ============
+            analysis_log = weights_dir / "weight_analysis.log"
+            with open(analysis_log, "w") as f:
+                def log_analysis(msg):
+                    f.write(msg + "\n")
+                    logger.info(msg)
                 
-                # Normalize coordinates
-                x = (x - x.min()) / (x.max() - x.min() + 1e-6)
-                y = (y - y.min()) / (y.max() - y.min() + 1e-6)
-                z = (z - z.min()) / (z.max() - z.min() + 1e-6)
+                log_analysis("=" * 60)
+                log_analysis("Weight Analysis Report")
+                log_analysis("=" * 60)
+                log_analysis(f"Number of views: {len(weights_downsampled)}")
+                log_analysis(f"Entropy alpha: {weighting_config.entropy_alpha}")
+                log_analysis(f"Attention layer: {weighting_config.attention_layer}")
+                log_analysis(f"Attention step: {weighting_config.attention_step}")
                 
+                # Entropy analysis
+                if entropy_per_view:
+                    log_analysis("\n--- Entropy Analysis ---")
+                    entropy_values = []
+                    for view_idx, e in sorted(entropy_per_view.items()):
+                        log_analysis(
+                            f"  View {view_idx}: min={e.min():.4f}, max={e.max():.4f}, "
+                            f"mean={e.mean():.4f}, std={e.std():.4f}"
+                        )
+                        entropy_values.append(e)
+                    
+                    # Cross-view entropy difference
+                    if len(entropy_values) > 1:
+                        entropy_stack = torch.stack(entropy_values, dim=0)
+                        view_std = entropy_stack.std(dim=0)
+                        log_analysis(f"\n  Cross-view entropy std (per latent):")
+                        log_analysis(f"    min={view_std.min():.4f}, max={view_std.max():.4f}, mean={view_std.mean():.4f}")
+                
+                # Weight analysis
+                log_analysis("\n--- Weight Analysis (Downsampled) ---")
                 for view_idx, w in sorted(weights_downsampled.items()):
-                    w_np = w.cpu().numpy()
-                    
-                    # Robust normalization
-                    vmin, vmax = np.percentile(w_np, [2, 98])
-                    w_norm = np.clip((w_np - vmin) / (vmax - vmin + 1e-6), 0, 1)
-                    
-                    order = np.argsort(z)
-                    
-                    fig = plt.figure(figsize=(10, 8))
-                    ax = fig.add_subplot(111, projection='3d')
-                    
-                    scatter = ax.scatter(
-                        x[order], y[order], z[order],
-                        c=w_norm[order],
-                        cmap='viridis',
-                        s=2,
-                        alpha=0.6,
+                    log_analysis(
+                        f"  View {view_idx}: min={w.min():.6f}, max={w.max():.6f}, "
+                        f"mean={w.mean():.6f}, std={w.std():.6f}"
                     )
-                    
-                    ax.set_xlabel('X')
-                    ax.set_ylabel('Y')
-                    ax.set_zlabel('Z')
-                    ax.set_title(f'View {view_idx} Weight (Downsampled, {len(w_np)} points)')
-                    
-                    plt.colorbar(scatter, ax=ax, shrink=0.6, label='Weight')
-                    plt.savefig(weights_dir / f'weight_3d_downsampled_view{view_idx:02d}.png', dpi=150)
-                    plt.close()
                 
-                logger.info("Saved 3D weight visualizations (downsampled)")
+                # Check weight sum
+                views = sorted(weights_downsampled.keys())
+                weight_sum = sum(weights_downsampled[v] for v in views)
+                log_analysis(f"\n  Weight sum: min={weight_sum.min():.4f}, max={weight_sum.max():.4f}")
+                
+                # Cross-view weight difference
+                weight_stack = torch.stack([weights_downsampled[v] for v in views], dim=0)
+                view_std = weight_stack.std(dim=0)
+                log_analysis(f"\n  Cross-view weight std (per latent):")
+                log_analysis(f"    min={view_std.min():.6f}, max={view_std.max():.6f}, mean={view_std.mean():.6f}")
+                
+                # Find latents with most weight variation
+                top_k = 5
+                top_indices = torch.argsort(view_std, descending=True)[:top_k]
+                log_analysis(f"\n  Top {top_k} latents with most weight variation:")
+                for idx in top_indices:
+                    log_analysis(f"    Latent {idx.item()}: std={view_std[idx]:.4f}")
+                    for v in views:
+                        log_analysis(f"      View {v}: {weights_downsampled[v][idx]:.4f}")
+                
+                log_analysis("\n" + "=" * 60)
             
-            # 3D visualization with ORIGINAL coords (expanded weights)
-            if original_coords is not None and weights_expanded:
-                coords_np = original_coords.cpu().numpy()
-                x, y, z = coords_np[:, 1], coords_np[:, 2], coords_np[:, 3]
+            logger.info(f"Saved weight analysis to {analysis_log}")
+            
+            # Generate visualizations
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                # numpy is already imported at module level as np
                 
-                # Normalize coordinates
-                x = (x - x.min()) / (x.max() - x.min() + 1e-6)
-                y = (y - y.min()) / (y.max() - y.min() + 1e-6)
-                z = (z - z.min()) / (z.max() - z.min() + 1e-6)
-                
-                for view_idx, w in sorted(weights_expanded.items()):
-                    w_np = w.cpu().numpy()
+                # Weight distribution histogram (downsampled)
+                if weights_downsampled:
+                    fig, axes = plt.subplots(1, len(weights_downsampled), figsize=(4 * len(weights_downsampled), 4))
+                    if len(weights_downsampled) == 1:
+                        axes = [axes]
                     
-                    # Robust normalization
-                    vmin, vmax = np.percentile(w_np, [2, 98])
-                    w_norm = np.clip((w_np - vmin) / (vmax - vmin + 1e-6), 0, 1)
+                    for ax, (view_idx, w) in zip(axes, sorted(weights_downsampled.items())):
+                        w_np = w.cpu().numpy()
+                        ax.hist(w_np, bins=50, alpha=0.7, edgecolor='black')
+                        ax.set_xlabel('Weight')
+                        ax.set_ylabel('Count')
+                        ax.set_title(f'View {view_idx} (downsampled)\nmean={w_np.mean():.4f}, std={w_np.std():.4f}')
                     
-                    order = np.argsort(z)
-                    
-                    fig = plt.figure(figsize=(10, 8))
-                    ax = fig.add_subplot(111, projection='3d')
-                    
-                    scatter = ax.scatter(
-                        x[order], y[order], z[order],
-                        c=w_norm[order],
-                        cmap='viridis',
-                        s=0.5,  # Smaller points because more points
-                        alpha=0.4,
-                    )
-                    
-                    ax.set_xlabel('X')
-                    ax.set_ylabel('Y')
-                    ax.set_zlabel('Z')
-                    ax.set_title(f'View {view_idx} Weight (Expanded, {len(w_np)} points)')
-                    
-                    plt.colorbar(scatter, ax=ax, shrink=0.6, label='Weight')
-                    plt.savefig(weights_dir / f'weight_3d_expanded_view{view_idx:02d}.png', dpi=150)
+                    plt.tight_layout()
+                    plt.savefig(weights_dir / 'weight_distribution_downsampled.png', dpi=150)
                     plt.close()
+                    logger.info("Saved downsampled weight distribution plot")
                 
-                logger.info("Saved 3D weight visualizations (expanded)")
+                # Weight distribution histogram (expanded)
+                if weights_expanded:
+                    fig, axes = plt.subplots(1, len(weights_expanded), figsize=(4 * len(weights_expanded), 4))
+                    if len(weights_expanded) == 1:
+                        axes = [axes]
+                    
+                    for ax, (view_idx, w) in zip(axes, sorted(weights_expanded.items())):
+                        w_np = w.cpu().numpy()
+                        ax.hist(w_np, bins=50, alpha=0.7, edgecolor='black', color='green')
+                        ax.set_xlabel('Weight')
+                        ax.set_ylabel('Count')
+                        ax.set_title(f'View {view_idx} (expanded)\nmean={w_np.mean():.4f}, std={w_np.std():.4f}')
+                    
+                    plt.tight_layout()
+                    plt.savefig(weights_dir / 'weight_distribution_expanded.png', dpi=150)
+                    plt.close()
+                    logger.info("Saved expanded weight distribution plot")
                 
-        except ImportError as e:
-            logger.warning(f"Could not generate visualizations: {e}")
+                # Entropy distribution histogram
+                if entropy_per_view:
+                    fig, axes = plt.subplots(1, len(entropy_per_view), figsize=(4 * len(entropy_per_view), 4))
+                    if len(entropy_per_view) == 1:
+                        axes = [axes]
+                    
+                    for ax, (view_idx, e) in zip(axes, sorted(entropy_per_view.items())):
+                        e_np = e.cpu().numpy()
+                        ax.hist(e_np, bins=50, alpha=0.7, edgecolor='black', color='orange')
+                        ax.set_xlabel('Entropy')
+                        ax.set_ylabel('Count')
+                        ax.set_title(f'View {view_idx}\nmean={e_np.mean():.4f}, std={e_np.std():.4f}')
+                    
+                    plt.tight_layout()
+                    plt.savefig(weights_dir / 'entropy_distribution.png', dpi=150)
+                    plt.close()
+                    logger.info("Saved entropy distribution plot")
+                
+                # 3D visualization with DOWNSAMPLED coords (where attention is computed)
+                if downsampled_coords is not None and weights_downsampled:
+                    coords_np = downsampled_coords.cpu().numpy()
+                    x, y, z = coords_np[:, 1], coords_np[:, 2], coords_np[:, 3]
+                    
+                    # Normalize coordinates
+                    x = (x - x.min()) / (x.max() - x.min() + 1e-6)
+                    y = (y - y.min()) / (y.max() - y.min() + 1e-6)
+                    z = (z - z.min()) / (z.max() - z.min() + 1e-6)
+                    
+                    for view_idx, w in sorted(weights_downsampled.items()):
+                        w_np = w.cpu().numpy()
+                        
+                        # Robust normalization
+                        vmin, vmax = np.percentile(w_np, [2, 98])
+                        w_norm = np.clip((w_np - vmin) / (vmax - vmin + 1e-6), 0, 1)
+                        
+                        order = np.argsort(z)
+                        
+                        fig = plt.figure(figsize=(10, 8))
+                        ax = fig.add_subplot(111, projection='3d')
+                        
+                        scatter = ax.scatter(
+                            x[order], y[order], z[order],
+                            c=w_norm[order],
+                            cmap='viridis',
+                            s=2,
+                            alpha=0.6,
+                        )
+                        
+                        ax.set_xlabel('X')
+                        ax.set_ylabel('Y')
+                        ax.set_zlabel('Z')
+                        ax.set_title(f'View {view_idx} Weight (Downsampled, {len(w_np)} points)')
+                        
+                        plt.colorbar(scatter, ax=ax, shrink=0.6, label='Weight')
+                        plt.savefig(weights_dir / f'weight_3d_downsampled_view{view_idx:02d}.png', dpi=150)
+                        plt.close()
+                    
+                    logger.info("Saved 3D weight visualizations (downsampled)")
+                
+                # 3D visualization with ORIGINAL coords (expanded weights)
+                if original_coords is not None and weights_expanded:
+                    coords_np = original_coords.cpu().numpy()
+                    x, y, z = coords_np[:, 1], coords_np[:, 2], coords_np[:, 3]
+                    
+                    # Normalize coordinates
+                    x = (x - x.min()) / (x.max() - x.min() + 1e-6)
+                    y = (y - y.min()) / (y.max() - y.min() + 1e-6)
+                    z = (z - z.min()) / (z.max() - z.min() + 1e-6)
+                    
+                    for view_idx, w in sorted(weights_expanded.items()):
+                        w_np = w.cpu().numpy()
+                        
+                        # Robust normalization
+                        vmin, vmax = np.percentile(w_np, [2, 98])
+                        w_norm = np.clip((w_np - vmin) / (vmax - vmin + 1e-6), 0, 1)
+                        
+                        order = np.argsort(z)
+                        
+                        fig = plt.figure(figsize=(10, 8))
+                        ax = fig.add_subplot(111, projection='3d')
+                        
+                        scatter = ax.scatter(
+                            x[order], y[order], z[order],
+                            c=w_norm[order],
+                            cmap='viridis',
+                            s=0.5,  # Smaller points because more points
+                            alpha=0.4,
+                        )
+                        
+                        ax.set_xlabel('X')
+                        ax.set_ylabel('Y')
+                        ax.set_zlabel('Z')
+                        ax.set_title(f'View {view_idx} Weight (Expanded, {len(w_np)} points)')
+                        
+                        plt.colorbar(scatter, ax=ax, shrink=0.6, label='Weight')
+                        plt.savefig(weights_dir / f'weight_3d_expanded_view{view_idx:02d}.png', dpi=150)
+                        plt.close()
+                    
+                    logger.info("Saved 3D weight visualizations (expanded)")
+            except ImportError as e:
+                logger.warning(f"Could not generate visualizations: {e}")
 
 
 def main():
@@ -3016,6 +3024,10 @@ Examples:
     parser.add_argument("--stage1_steps", type=int, default=50, help="Stage 1 (shape) inference steps")
     parser.add_argument("--stage2_steps", type=int, default=25, help="Stage 2 (texture) inference steps")
     parser.add_argument("--decode_formats", type=str, default="gaussian,mesh", help="Decode formats")
+
+    parser.add_argument("--save_all", action="store_true", 
+                       help="Save all intermediate outputs (PLY, params, logs). Default: False (Save GLB only)")
+    parser.add_argument("--handoff_dir", type=str, default=None, help="Fixed output location for the GLB")
     
     # ========================================
     # Stage 1 (Shape) Weighting Parameters
@@ -3109,6 +3121,8 @@ Examples:
             stage2_steps=args.stage2_steps,
             decode_formats=decode_formats,
             model_tag=args.model_tag,
+            save_all=args.save_all,
+            handoff_dir=args.handoff_dir,
             # Stage 1 (Shape) weighting
             stage1_weighting=not args.no_stage1_weighting,
             stage1_entropy_layer=args.stage1_entropy_layer,
@@ -3144,4 +3158,3 @@ Examples:
 
 if __name__ == "__main__":
     main()
-

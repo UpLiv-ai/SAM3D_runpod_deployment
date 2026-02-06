@@ -1,4 +1,4 @@
-# Use the specific RunPod base image you successfully tested with 
+# Use the specific RunPod base image you successfully tested with
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 # --- System Dependencies ---
@@ -25,8 +25,8 @@ RUN pip install --no-cache-dir "git+https://github.com/facebookresearch/pytorch3
 RUN pip install --no-cache-dir blinker --ignore-installed
 
 # 4. Install Kaolin (Pre-compiled Wheel)
-# Using the specific version/index you verified (0.18.0 for Torch 2.5.1) [cite: 3]
-# This will trigger a PyTorch upgrade to 2.5.1, which is expected.
+# Note: Using the version you verified (0.18.0 for Torch 2.5.1)
+# This may trigger a PyTorch upgrade from 2.4.0 -> 2.5.1, which is expected/desired based on your tests.
 RUN pip install --no-cache-dir kaolin==0.18.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu121.html
 
 # 5. Install Custom Rendering Engines (NVDiffrast & GSplat)
@@ -38,6 +38,7 @@ RUN pip install --no-cache-dir ninja jaxtyping rich && \
 RUN pip install --no-cache-dir git+https://github.com/EasternJournalist/utils3d.git
 
 # 7. Install Remaining Heavy Dependencies
+# Grouped to reduce layer count but separated from fragile compiles above
 RUN pip install --no-cache-dir \
     seaborn omegaconf hydra-core einops timm \
     gradio rembg loguru open3d opencv-python \
@@ -46,18 +47,14 @@ RUN pip install --no-cache-dir \
 # --- Project Setup ---
 
 # 8. Copy your project files
-# Expects: handler.py, MV-SAM3D/, and Depth-Anything-3/ in the build context
+# This copies handler.py, sam-3d-objects/, etc. into /app
 COPY . /app
 
-# 9. Install Repo Requirements
-# We use the extra-index-url to ensure CUDA versions are found if needed [cite: 6]
-RUN if [ -f MV-SAM3D/requirements.txt ]; then \
-    pip install -r MV-SAM3D/requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121; \
-    fi
-
-RUN if [ -f Depth-Anything-3/requirements.txt ]; then \
-    pip install -r Depth-Anything-3/requirements.txt; \
-    fi
+# 9. Final Requirements Check
+# Runs both repo's requirements.txt to catch anything we missed above.
+# We use the extra-index-url to ensure CUDA versions are found if needed.
+RUN pip install -r sam-3d-objects/requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
+RUN pip install -r Depth-Anything-3/requirements.txt
 
 # --- Deployment ---
 

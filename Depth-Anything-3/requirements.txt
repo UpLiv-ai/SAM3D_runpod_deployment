@@ -17,7 +17,7 @@ pillow
 omegaconf
 evo
 e3nn
-moviepy
+moviepy<2.0.0
 plyfile
 pillow_heif
 safetensors
